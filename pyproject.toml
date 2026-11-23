@@ -1,15 +1,21 @@
 [project]
 name = "pdf-extractext-gui"
 version = "0.1.0"
-description = "Interfaz de escritorio (Tkinter) para PDF Extractext"
-requires-python = ">=3.14"
+description = "Cliente de escritorio (Tkinter) del poly-repo PDF Extractext, conectado vía Traefik"
+readme = "README.md"
+requires-python = ">=3.10"
 authors = [{name = "PDF Extract", email = "contact@pdfextract.local"}]
 license = {text = "MIT"}
 
 dependencies = [
     "customtkinter>=5.2.2,<6",
-    "requests>=2.34.2",
+    "requests>=2.34.2,<3",
 ]
+
+[project.scripts]
+pdf-extractext-admin = "scripts.admin:main"
+pdf-extractext-build = "scripts.build:main"
+pdf-extractext-release = "scripts.release:main"
 
 [tool.uv]
 package = false
@@ -21,12 +27,17 @@ addopts = "--strict-markers -v"
 
 [tool.black]
 line-length = 100
-target-version = ["py314"]
+target-version = ["py310"]
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203", "W503", "N802"]
 
 [dependency-groups]
 dev = [
-    "black>=26.3.1",
+    "black>=26.10.1",
     "flake8>=7.4.1",
+    "pip-audit>=2.10.1",
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
 ]
