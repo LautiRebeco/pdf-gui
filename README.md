@@ -1,87 +1,62 @@
-# pdf-extractext-gui
+# pdf-gui
 
-Cliente de escritorio (Tkinter/CustomTkinter) del poly-repo **PDF Extractext**.
-Se conecta al **gateway Traefik** del orquestador, que enruta:
+Cliente de escritorio de **PDF Extractext**, hecho en Python con CustomTkinter. Podés abrir un PDF, extraer su contenido como texto plano o Markdown y editar el resultado antes de copiarlo o guardarlo. Desde **Historial** podés volver a abrir el texto de un documento guardado, renombrarlo o eliminarlo.
 
-* `/documents*` → servicio de documentos (el que persiste en MongoDB).
-* `/extract*` → servicio de extracción de texto de PDF.
+## Estructura
 
-No hay configuración local ni archivo de preferencias: **todo se lee del entorno**
-al arrancar. La pestaña *Configuración* muestra los valores efectivos (sin
-secretos) y permite copiar una plantilla.
+```text
+interface.py      Ventana, extracción, historial y configuración
+api_client.py     Peticiones a los servicios y seguimiento de la extracción
+app_settings.py   Lectura y validación de las variables de entorno
+tests/            Pruebas de la interfaz, el cliente HTTP y la configuración
+```
 
-## Ejecutar
+## Cómo funciona la extracción
 
-```bash
-cp .env.example .env
-set -a && . ./.env && set +a
-uv sync --frozen --all-groups
+La GUI envía las peticiones a Traefik. El gateway dirige `/documents` al servicio de documentos y `/extract` al extractor.
+
+- **Texto plano.** La GUI sube el PDF a `POST /documents/upload` y consulta el estado del procesamiento por el SHA-256 del archivo. Si el servicio revierte la operación, la GUI vuelve a intentar la carga una vez. El documento procesado queda disponible en el historial.
+- **Markdown.** La GUI envía el PDF a `POST /extract` y muestra el contenido que devuelve el extractor. Este flujo no agrega una entrada al historial.
+
+## Puesta en marcha
+
+Necesitás Python 3.10 o posterior y `uv`. Para correr el sistema en local, levantá primero los servicios con Docker Compose desde el [orquestador](https://github.com/LautiRebeco/pdf-extract-orchestrator). Después, desde la carpeta de la GUI, configurá la URL del gateway e iniciá la aplicación.
+
+**PowerShell**
+
+```powershell
+$env:PDF_EXTRACT_GATEWAY_URL = "http://127.0.0.1:8000"
+uv sync --frozen
 uv run python interface.py
 ```
 
-El `.env` **no** es leído por la aplicación: solo por tu shell o por el
-orquestador. La app solo mira `os.environ`.
-
-### Modo desarrollo sin Traefik
+**Bash**
 
 ```bash
 export PDF_EXTRACT_GATEWAY_URL=http://127.0.0.1:8000
-# o apuntar directo a cada servicio:
-export PDF_EXTRACT_DOCUMENTS_URL=http://127.0.0.1:8002/documents
-export PDF_EXTRACT_EXTRACT_URL=http://127.0.0.1:8001/extract
+uv sync --frozen
+uv run python interface.py
 ```
 
-HTTP solo se permite en `localhost`/`127.0.0.1`/`::1`; para cualquier otro host
-la app exige HTTPS (Traefik termina TLS).
+Los ejemplos usan el puerto que publica el orquestador por defecto. Si cambiaste el puerto o usás un gateway remoto, ajustá la URL.
 
-## SAGA y resiliencia
+## Configuración
 
-`POST /documents/upload` inicia la SAGA en el servicio de documentos, pero su
-respuesta **no incluye** `document_id`. Por eso el cliente:
+La GUI lee las variables del entorno de la terminal al arrancar. [`.env.example`](.env.example) sirve de referencia para configurar la autenticación, la CA interna y los tiempos de espera. Si usás el archivo como plantilla, cargá las variables en la terminal antes de iniciar la aplicación.
 
-1. calcula SHA-256 local del PDF,
-2. reintenta el upload ante `409/502/503/504` respetando `Retry-After`,
-3. hace polling de `GET /documents/by-checksum/{sha256}` hasta `estado=ok|error`,
-4. si la SAGA fue compensada (`error`), vuelve a subir los mismos bytes — el
-   backend los deduplica por checksum — una única vez,
-5. propaga `X-Request-ID` en cada petición para correlacionar logs.
+Para conectarte directamente a los servicios, definí sus URL completas en `PDF_EXTRACT_DOCUMENTS_URL` y `PDF_EXTRACT_EXTRACT_URL`. HTTP está permitido en `localhost`, `127.0.0.1` y `::1`. Para hosts remotos se requiere HTTPS.
 
-El formato *Markdown* llama directamente a `/extract` (no crea documento ni
-SAGA); es una decisión explícita y queda registrada en los logs.
-
-## Seguridad
-
-* TLS verificado siempre; CA interna vía `PDF_EXTRACT_CA_BUNDLE`.
-* Autenticación Bearer/Basic/custom configurable por entorno; el valor nunca se
-  loguea ni se persiste.
-* Redirects desactivados por defecto; `trust_env=False` (ni proxy ni `.netrc`
-  del entorno) salvo opt-in explícito.
-* Límite de tamaño para respuestas HTTP y para el PDF local; validación de
-  magic bytes `%PDF-`.
-* `doc_id` y checksum se codifican con `quote()` antes de ir al path.
-
-## 12-factor
-
-| Factor | Cómo se cumple |
-|---|---|
-| I Codebase | Un repo por servicio en el poly-repo; dependencias nunca vendidas. |
-| II Dependencies | `pyproject.toml` + `uv.lock` con hashes; grupos `dev` separados. |
-| III Config | Solo entorno; ver `.env.example`. Sin archivos de preferencias. |
-| IV Backing services | URL de cada servicio derivadas del gateway y sobreescribibles por entorno. |
-| V Build/release/run | `scripts/build.py`, `scripts/release.py` y CI separan artefacto, publicación y ejecución. |
-| VI Processes | Proceso sin estado propio: la SAGA y el historial viven en el backend. |
-| VII Port binding | `PDF_EXTRACT_HEALTH_PORT` expone `/health` y `/ready` para el supervisor. |
-| VIII Concurrency | `ThreadPoolExecutor` acotado por `PDF_EXTRACT_MAX_WORKERS`. |
-| IX Disposability | `WM_DELETE_WINDOW` y SIGTERM cancelan trabajos, cierran el pool y el health server. |
-| X Dev/prod parity | Mismo Python, mismo lock y mismos tests en local, Docker y CI. |
-| XI Logs | JSON-like a stdout con `request_id`/`event`; archivo opcional por entorno. |
-| XII Admin processes | `python -m scripts.admin ...` usa exactamente el mismo código y entorno. |
-
-## Verificación
+## Pruebas
 
 ```bash
 uv run pytest -q
-uv run black --check .
-uv run flake8 .
-uv run pip-audit
 ```
+
+Las pruebas del cliente HTTP usan respuestas simuladas para cubrir casos como el seguimiento por SHA-256 y los reintentos.
+
+## Repositorios del proyecto
+
+- El [orquestador](https://github.com/LautiRebeco/pdf-extract-orchestrator) levanta los servicios y configura Traefik.
+- El [servicio de documentos](https://github.com/LautiRebeco/pdf-documents-service) guarda los PDF y gestiona el historial.
+- El [servicio de extracción](https://github.com/LautiRebeco/pdf-extract-service) extrae el texto de los PDF.
+- La [GUI](https://github.com/LautiRebeco/pdf-gui) es la aplicación de escritorio.
